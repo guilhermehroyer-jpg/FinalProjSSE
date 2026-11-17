@@ -1,0 +1,14 @@
+# MATLAB temporary files
+*.asv
+*.m~
+*.autosave
+*.mex*
+slprj/
+codegen/
+
+# Run outputs (map pictures, logs) - commit a good one by hand for the report if you want
+results/*
+!results/.gitkeep
+
+# macOS
+.DS_Store
