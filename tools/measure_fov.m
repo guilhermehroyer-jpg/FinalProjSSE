@@ -17,7 +17,7 @@ w = input('Real width of the fire print (m), e.g. 0.15: ');
 r = input('Distance from camera to the print (m), e.g. 1.0: ');
 
 img = grab_frame(cam, C.camera.scale);
-F   = fire_features(img, C.fire.mask);
+F   = fire_features(img, C);
 clear cam
 if ~F.found
     error('No red blob found. Check the lighting and C.fire.mask in config.m.');

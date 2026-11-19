@@ -1,6 +1,9 @@
 %% EVALUATE_FIRE  Tune the fire rules on training images, report a confusion matrix on test images.
 %
 % Collect images with live_fire.m (press f / n). Tune C.fire.rules in config.m.
+% Single frames are evaluated here (the robot additionally needs 2 of 3 frames).
+% It also compares the full detector with a COLOUR-ONLY baseline, to show
+% what the shape and colour-layer rules add (good for the report).
 % Vary the conditions:
 %   data/images/fire/    target at different distances (0.3-2 m), angles,
 %                     positions in the frame, lighting
@@ -24,7 +27,7 @@ for c = 1:numel(classes)
     testIdx = randperm(numel(files), round(testShare*numel(files)));
     for i = 1:numel(files)
         img = imread(fullfile(files(i).folder, files(i).name));
-        F = fire_features(img, C.fire.mask);
+        F = fire_features(img, C);
         F_all = [F_all; F]; %#ok<AGROW>
         label{end+1, 1}  = classes{c}; %#ok<SAGROW>
         isTest(end+1, 1) = ismember(i, testIdx);
@@ -42,10 +45,13 @@ tr = ~isTest;
 fprintf('%d images: %d training, %d test\n', numel(truth), sum(tr), sum(isTest));
 
 %% Step 1: features per class on TRAINING images -> choose thresholds
-feat = {'area', 'extent', 'circularity', 'meanSat'};
-figure('Name', 'Fire features per class (training images)');
+% For "fire" images F is the flame; for "nofire" images it is the most
+% flame-like distractor, so the boxes show how well each rule separates them.
+feat = {'shapeIoU', 'aspect', 'fracRed', 'fracOrange', 'fracYellow', 'yellowPos', ...
+        'meanSat', 'area'};
+figure('Name', 'Fire features per class (training images)', 'Position', [60 100 1300 600]);
 for k = 1:numel(feat)
-    subplot(1, numel(feat), k);
+    subplot(2, 4, k);
     v = [F_all(tr).(feat{k})]';
     boxchart(categorical(label(tr)), v);
     title(feat{k});
@@ -63,6 +69,11 @@ end
 %% Step 3: confusion matrices (report the TEST one)
 report('Fire detector - training images', truth(tr), pred(tr));
 report('Fire detector - test images',     truth(isTest), pred(isTest));
+
+%% Step 4: colour-only baseline (any big enough red/orange blob = fire)
+predColour = arrayfun(@(f) f.found && f.area >= C.fire.rules.minArea && ...
+                      f.meanSat >= C.fire.rules.minSat, F_all);
+report('Colour-only baseline - test images', truth(isTest), predColour(isTest));
 
 function report(name, truth, pred)
 TP = sum( truth &  pred);   FN = sum( truth & ~pred);

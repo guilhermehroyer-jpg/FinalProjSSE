@@ -6,7 +6,7 @@ Team: Joan Carles Codorníu, Guilherme Hahn Royer, Teije Rijswijk.
 A LEGO MINDSTORMS EV3 robot with a webcam that searches a room after a (simulated) disaster:
 
 - It **listens** for a child crying, a scream, or someone shouting **"help"**, and drives to the sound.
-- It **looks** for fires (printed cartoon flames), estimates their **real size and position**, and drives to the **biggest** one.
+- It **looks** for fires (our printed cartoon flame, `data/images/fire_template.jpg`), recognises them by **colour layers and shape**, estimates their **real size and position**, and drives to the **biggest** one.
 - **Sound has priority** over fire. A cry interrupts whatever the robot is doing.
 - It builds a **live map** of its path, the obstacles it sees with the ultrasonic sensor, the fires, and the sound sources.
 - After each fire or sound it **returns home** and starts again, until the area is clear.
@@ -56,8 +56,10 @@ FinalProjSSE/
 │   ├── help_train_evaluate.m                   build templates, choose threshold, confusion matrix
 │   └── live_test.m, live_help.m                live demos with plots (FFT, spectrogram, MFCC)
 ├── vision/             seeing
-│   ├── fire_features.m, classify_fire.m        rule-based fire detector (HSV mask + blob rules)
-│   ├── detect_fire.m, grab_frame.m             camera frame -> detection
+│   ├── fire_mask.m                             HSV colour mask (red, orange, yellow) + cleaning
+│   ├── fire_template.m                         flame silhouette template (built from the printed picture)
+│   ├── fire_features.m, classify_fire.m        rule-based detector: shape match + colour layers
+│   ├── detect_fire.m, grab_frame.m             camera -> detection, confirmed over 2 of 3 frames
 │   ├── fire_geometry.m                         direction and REAL size of a fire
 │   ├── live_fire.m                             live demo + collect labelled images (keys f / n)
 │   └── evaluate_fire.m                         tune + confusion matrix
@@ -139,11 +141,19 @@ It's a cry only if all five rules pass.
 
 **Sound direction.** One microphone can't hear direction, so the robot **stops and turns**, measures loudness at each heading (300–3000 Hz), and drives toward the loudest one. It repeats this every 0.5 m.
 
-**Fire detection (rule-based).**
-1. RGB → HSV, then keep red and orange pixels (hue near 0 or 1, saturated, not dark).
-2. Opening and closing, then fill holes, so the yellow centre of the flame becomes part of the blob.
-3. Keep the largest blob.
-4. Rules on its area, solidity (extent), circularity and saturation.
+**Fire detection (rule-based + template matching).** Colour alone isn't enough: any red object would pass. So the detector checks what makes *our* flame unique.
+1. RGB → HSV, then keep red, orange and yellow pixels that are saturated and not dark. White paper, walls and shadows drop out.
+2. Opening and closing, then fill holes, so the flame becomes one solid silhouette.
+3. Check the **5 biggest blobs**, not only the biggest, so a red jacket in view can't hide a smaller fire.
+4. For each blob, measure:
+   - **shape**: its silhouette, resized to 64×64, compared with the template silhouette of the printed flame (intersection ÷ union). Circles and rectangles score about 0.6; the flame scores 0.8–0.95.
+   - **proportions**: height ÷ width (the flame is 1.4).
+   - **colour layers**: the share of red (outside), orange and yellow (core) pixels.
+   - **core position**: the yellow core must be in the lower part of the flame.
+5. A blob is the fire only if **all** rules pass.
+6. The robot only acts on a fire that passes in **2 of 3 frames**, so a single wrong frame doesn't make it turn.
+
+We tested this on simulated camera views (blur, tilt, washed-out colours, 20–150 px tall) and on red and orange distractors: circles, rectangles, a shirt shape, a red-orange-yellow logo, skin, and a red teardrop with the flame's outline. The flame was found in 93–100% of frames once it was at least 30 px tall. The distractors were accepted in at most 2% of frames, and in most cases never. `vision/evaluate_fire.m` gives the real numbers on our own photos, compared with a colour-only baseline.
 
 **Real size.** A small fire close by looks as big as a big fire far away. The robot turns to centre the fire, measures its distance *r* with the ultrasonic sensor, and computes (pinhole camera model):
 - direction = −atan(u · tan(FOV/2)), where u is the blob's horizontal position from −1 (left) to +1 (right)
@@ -159,7 +169,9 @@ It's a cry only if all five rules pass.
 
 ## Demo tips
 
-- Print both fires from the **same picture**, scaled (e.g. 25 cm and 12 cm), on **matte** paper.
+- Print both fires from `data/images/fire_template.jpg`, scaled (e.g. 25 cm and 12 cm tall), on **matte** paper, with a **white margin of a few cm** around the flame, so it never touches another coloured object in the image.
+- The small fire needs to be about 30 px tall in the processed image. With `C.camera.scale = 0.5`, a 12 cm flame is found up to about 2 m away.
+- If you print a different picture, replace `fire_template.jpg` and run `fire_template([], true)` to rebuild the template.
 - Stand each fire on something flat (a box) **facing the robot**, so the ultrasonic echo comes from the fire and not the wall behind it.
 - **Loop** the cry or "help" on a speaker during the sound search; one short shout is over before the robot has turned. After the robot reports the source, sounds are muted for 30 s (`C.sound.muteAfterHandled`). Turn the speaker off within that time.
 - Keep the room's lighting the same as when you tuned the fire thresholds.

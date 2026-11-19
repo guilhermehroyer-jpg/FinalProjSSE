@@ -12,6 +12,8 @@ C.root = fileparts(mfilename('fullpath'));
 C.paths.soundData = fullfile(C.root, 'data', 'sound');    % help/ nothelp/ cry/ other/
 C.paths.imageData = fullfile(C.root, 'data', 'images');   % fire/ nofire/
 C.paths.helpModel = fullfile(C.root, 'models', 'help_model.mat');
+C.paths.fireTemplateImage = fullfile(C.root, 'data', 'images', 'fire_template.jpg');  % the printed picture
+C.paths.fireTemplate      = fullfile(C.root, 'models', 'fire_template.mat');        % built from it automatically
 C.paths.results   = fullfile(C.root, 'results');
 
 %% EV3 robot ------------------------------------------------------------
@@ -38,22 +40,41 @@ C.turn.timeout      = 8;            % seconds
 %% Camera ---------------------------------------------------------------
 C.camera.name       = "Microsoft® LifeCam Cinema(TM)";   % exact name from webcamlist
 C.camera.resolution = '1280x720';
-C.camera.scale      = 0.25;         % frames are shrunk to 320x180 before processing
+C.camera.scale      = 0.5;          % frames are shrunk to 640x360 before processing
+                                    % (0.25 = faster, but the small fire is only found within ~1 m)
 C.camera.hfov       = deg2rad(65);  % CALIBRATE with tools/measure_fov.m
 
-%% Fire detection (rule-based) ------------------------------------------
-% Colour mask. Hue runs 0..1: red is near 0 AND near 1, orange about 0.05-0.11.
-C.fire.mask.hueLow      = 0.11;     % red/orange if hue <= this ...
-C.fire.mask.hueHigh     = 0.94;     % ... or hue >= this
-C.fire.mask.satMin      = 0.5;
-C.fire.mask.valMin      = 0.25;
-C.fire.mask.openRadius  = 2;
-C.fire.mask.closeRadius = 3;
-% Rules on the largest blob (tune with vision/evaluate_fire.m)
-C.fire.rules.minArea        = 0.002;  % fraction of the image
-C.fire.rules.minExtent      = 0.30;
-C.fire.rules.minCircularity = 0.15;   % a flame is less round than a circle
-C.fire.rules.minSat         = 0.55;
+%% Fire detection (rule-based: colour layers + shape template) -----------
+% Our printed flame (data/images/fire_template.jpg) has three colour layers.
+% Hue runs 0..1 (red sits at BOTH ends):
+%   red outer layer  hue ~0.00     orange layer  hue ~0.056     yellow core  hue ~0.118
+% Colour mask: which pixels can belong to the flame
+C.fire.mask.hueHigh      = 0.94;    % red if hue >= this ...
+C.fire.mask.redMax       = 0.03;    % ... or hue < this
+C.fire.mask.orangeMax    = 0.085;   % orange: redMax <= hue < orangeMax
+C.fire.mask.hueLow       = 0.17;    % yellow: orangeMax <= hue <= hueLow
+C.fire.mask.satMin       = 0.35;    % red/orange must be at least this saturated
+C.fire.mask.satMinYellow = 0.25;    % the yellow core may look paler on camera
+C.fire.mask.valMin       = 0.25;    % not too dark
+C.fire.mask.openRadius   = 2;
+C.fire.mask.closeRadius  = 3;
+% Rules every candidate blob must pass (tune with vision/evaluate_fire.m).
+% For reference, the picture itself: aspect 1.40, red 62%, orange 24%,
+% yellow 14%, yellow core centred at 85% of the height (near the bottom).
+C.fire.rules.minArea      = 0.0015; % fraction of the image
+C.fire.rules.minSat       = 0.35;   % mean saturation of the blob
+C.fire.rules.minShapeIoU  = 0.65;   % silhouette overlap with the template (0..1)
+C.fire.rules.aspectMin    = 1.1;    % height / width
+C.fire.rules.aspectMax    = 1.9;
+C.fire.rules.minRed       = 0.30;   % fraction of the blob that is red ...
+C.fire.rules.minOrange    = 0.08;   % ... orange ...
+C.fire.rules.minYellow    = 0.04;   % ... yellow
+C.fire.rules.minYellowPos = 0.60;   % yellow core in the lower part (0 = top, 1 = bottom)
+% Search and confirmation
+C.fire.templateSize  = 64;          % silhouettes are compared at 64x64 pixels
+C.fire.maxBlobs      = 5;           % check the 5 biggest blobs, not only the biggest
+C.fire.confirmFrames = 3;           % look at 3 frames ...
+C.fire.confirmMin    = 2;           % ... a fire needs to pass in at least 2 of them
 % Memory of fires on the map
 C.fire.mergeRadius   = 0.30;        % m: closer than this = the same fire seen again
 C.fire.visitedRadius = 0.40;        % m: ignore fires this close to a visited one

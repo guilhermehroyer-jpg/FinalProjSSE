@@ -1,66 +1,100 @@
-function [F, mask] = fire_features(img, P)
-% FIRE_FEATURES  Find the largest red blob in an image and measure it.
+function [F, mask, cands] = fire_features(img, C)
+% FIRE_FEATURES  Find candidate blobs and describe their shape and colour layers.
 %
-%   [F, mask] = fire_features(img)        colour thresholds from config.m (C.fire.mask)
-%   [F, mask] = fire_features(img, P)     your own thresholds
+%   [F, mask, cands] = fire_features(img)        settings from config.m
+%   [F, mask, cands] = fire_features(img, C)
 %
-%   Steps (book Ch. 4):
-%     1. RGB -> HSV, threshold hue (red sits at BOTH ends of the hue circle,
-%        orange just above 0), saturation and brightness -> binary mask
-%     2. Morphological opening (removes specks) and closing (fills gaps), fill
-%        holes (the yellow centre of a cartoon flame becomes part of the blob)
-%     3. Label connected components, keep the largest blob
-%     4. Measure the blob
+%   F      the best candidate: the biggest blob that passes all rules of
+%          classify_fire, or (if none passes) the one whose shape is closest
+%          to the flame. F.found = false if there is no blob at all.
+%   mask   the cleaned colour mask (fire_mask)
+%   cands  features of every candidate checked (the C.fire.maxBlobs biggest)
 %
-%   F.found        true if any red blob was found
-%   F.area         blob area as a FRACTION of the image (0..1), so it does not
-%                  depend on the camera resolution; also a distance proxy
-%   F.circularity  4*pi*area/perimeter^2  (1 = perfect circle, small = ragged/thin)
-%   F.extent       blob area / bounding-box area (how "solid" the shape is)
-%   F.meanSat      mean saturation of the blob (printed red is very saturated)
-%   F.centroid     [x y] in pixels
-%   F.bbox         [x y width height] in pixels
-%   F.steer        horizontal offset of the centroid: -1 = far left, 0 = centre, +1 = far right
-%   F.imgSize      [height width] of the processed image
+%   Checking several blobs matters: a big red jacket in view must not hide
+%   a smaller fire behind it.
+%
+%   Features of a blob:
+%     area        fraction of the image covered (also a distance proxy)
+%     meanSat     mean saturation
+%     shapeIoU    TEMPLATE MATCHING (book 6.4.2): the blob's silhouette, cut to
+%                 its bounding box and resized to the template size, compared
+%                 with the flame template as intersection / union
+%                 (1 = identical shape, ~0.6 for circles and rectangles)
+%     aspect      bounding-box height / width (the flame is ~1.4)
+%     fracRed, fracOrange, fracYellow   share of the blob in each colour layer
+%     yellowPos   vertical position of the yellow core inside the blob
+%                 (0 = top, 1 = bottom; ~0.85 for our flame)
+%     circularity, extent, solidity     extra shape descriptors (book 6.2.1)
+%     centroid, bbox, steer             where it is (steer: -1 left .. +1 right)
+%     imgSize, shape                    image size, normalised silhouette
 
-if nargin < 2
-    C = config();
-    P = C.fire.mask;
-end
+if nargin < 2, C = config(); end
+P = C.fire.mask;
+T = fire_template(C);
 
-%% 1. Colour threshold in HSV
-hsv = rgb2hsv(img);
-H = hsv(:, :, 1);  S = hsv(:, :, 2);  V = hsv(:, :, 3);
-mask = (H <= P.hueLow | H >= P.hueHigh) & S >= P.satMin & V >= P.valMin;
-
-%% 2. Clean the mask
-mask = imopen(mask,  strel('disk', P.openRadius));
-mask = imclose(mask, strel('disk', P.closeRadius));
-mask = imfill(mask, 'holes');
-
-%% 3. Largest connected component
-stats = regionprops(mask, 'Area', 'Centroid', 'BoundingBox', 'Perimeter', ...
-                    'Extent', 'PixelIdxList');
+[mask, H, S] = fire_mask(img, P);
 [h, w] = size(mask);
 
-if isempty(stats)
-    F = struct('found', false, 'area', 0, 'circularity', NaN, 'extent', NaN, ...
-               'meanSat', NaN, 'centroid', [NaN NaN], 'bbox', [NaN NaN NaN NaN], ...
-               'steer', NaN, 'imgSize', [h w]);
+stats = regionprops(mask, 'Area', 'Centroid', 'BoundingBox', 'Perimeter', ...
+                    'Extent', 'Solidity', 'PixelIdxList', 'Image');
+[~, order] = sort([stats.Area], 'descend');
+order = order(1:min(C.fire.maxBlobs, numel(order)));
+
+list = {};
+for k = order
+    if stats(k).Area / (h*w) < C.fire.rules.minArea
+        break                                % sorted by size: the rest is smaller
+    end
+    list{end+1} = blob_features(stats(k), H, S, T, h, w, P); %#ok<AGROW>
+end
+
+if isempty(list)
+    F = make_F(false, 0, NaN, NaN, NaN, NaN, 0, NaN, 0, 0, 0, 0, ...
+               [NaN NaN], [NaN NaN NaN NaN], NaN, [h w], false(size(T)));
+    cands = F([]);
     return
 end
-[~, i] = max([stats.Area]);
-b = stats(i);
 
-%% 4. Measurements
-F.found       = true;
-F.area        = b.Area / (h*w);
-F.circularity = 4*pi*b.Area / max(b.Perimeter, 1)^2;
-F.extent      = b.Extent;
-F.meanSat     = mean(S(b.PixelIdxList));
-F.centroid    = b.Centroid;
-F.bbox        = b.BoundingBox;
-F.steer       = (b.Centroid(1) - w/2) / (w/2);
-F.imgSize     = [h w];
+cands = [list{:}];
+pass  = arrayfun(@(f) classify_fire(f, C.fire.rules), cands);
+if any(pass)
+    F = cands(find(pass, 1));                % biggest blob that passes
+else
+    [~, i] = max([cands.shapeIoU]);          % closest shape, for feedback
+    F = cands(i);
+end
 end
 
+%% ------------------------------------------------------------------------
+function f = blob_features(b, H, S, T, h, w, P)
+hb = H(b.PixelIdxList);
+isRed    = hb >= P.hueHigh | hb < P.redMax;
+isOrange = hb >= P.redMax  & hb < P.orangeMax;
+isYellow = hb >= P.orangeMax & hb <= P.hueLow;
+
+top = b.BoundingBox(2);
+hgt = b.BoundingBox(4);
+if any(isYellow)
+    [rows, ~] = ind2sub([h w], b.PixelIdxList(isYellow));
+    yellowPos = (mean(rows) - top) / hgt;
+else
+    yellowPos = 0;
+end
+
+shape = imresize(double(b.Image), size(T)) > 0.5;      % normalised silhouette
+iou   = nnz(shape & T) / max(nnz(shape | T), 1);
+
+f = make_F(true, b.Area/(h*w), 4*pi*b.Area/max(b.Perimeter, 1)^2, b.Extent, ...
+    b.Solidity, mean(S(b.PixelIdxList)), iou, hgt/b.BoundingBox(3), ...
+    mean(isRed), mean(isOrange), mean(isYellow), yellowPos, ...
+    b.Centroid, b.BoundingBox, (b.Centroid(1) - w/2)/(w/2), [h w], shape);
+end
+
+function F = make_F(found, area, circ, extent, solidity, meanSat, iou, aspect, ...
+                    fr, fo, fy, ypos, centroid, bbox, steer, imgSize, shape)
+% One place that builds the struct, so every F has the same fields in the same order.
+F = struct('found', found, 'area', area, 'circularity', circ, 'extent', extent, ...
+    'solidity', solidity, 'meanSat', meanSat, 'shapeIoU', iou, 'aspect', aspect, ...
+    'fracRed', fr, 'fracOrange', fo, 'fracYellow', fy, 'yellowPos', ypos, ...
+    'centroid', centroid, 'bbox', bbox, 'steer', steer, 'imgSize', imgSize, 'shape', shape);
+end
